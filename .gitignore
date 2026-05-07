@@ -27,3 +27,4 @@ docker-compose.private.yml
 boot.sh
 .aider*
 TODO.md
+catcode.sh
