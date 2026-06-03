@@ -46,6 +46,100 @@ def strip_html(text):
     return text
 
 
+STORY_FILTER_STOPWORDS = {
+    "about", "after", "again", "against", "amid", "among", "and", "are",
+    "around", "before", "being", "but", "can", "could", "did", "does",
+    "during", "for", "from", "has", "have", "her", "his", "how", "into",
+    "its", "may", "more", "new", "news", "not", "over", "says", "she",
+    "that", "the", "their", "this", "through", "with", "what", "when",
+    "where", "who", "why", "will", "you", "your",
+}
+
+
+def _story_filter_tokens(text):
+    tokens = re.findall(r"[a-z0-9][a-z0-9'-]{2,}", (text or "").lower())
+    return {
+        token.strip("-'")
+        for token in tokens
+        if token.strip("-'") and token.strip("-'") not in STORY_FILTER_STOPWORDS
+    }
+
+
+def _article_filter_text(article):
+    return article.title or ""
+
+
+def _jaccard(left, right):
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _select_story_prompt_articles(story, limit=10):
+    """
+    Return articles to use for story-level LLM prompts.
+
+    This is intentionally conservative: it only removes clear outliers from
+    multi-source clusters and does not alter persisted story membership.
+    """
+    articles = list(story.articles[:limit])
+    if len(articles) < 3:
+        return articles, []
+
+    token_sets = [_story_filter_tokens(_article_filter_text(article)) for article in articles]
+    story_tokens = _story_filter_tokens(" ".join([story.headline or "", story.title or ""]))
+
+    # Pick the article that best represents the cluster based on title/content
+    # overlap with the story label and neighboring articles.
+    anchor_index = 0
+    best_score = -1.0
+    for idx, tokens in enumerate(token_sets):
+        peer_scores = [
+            _jaccard(tokens, other)
+            for other_idx, other in enumerate(token_sets)
+            if other_idx != idx
+        ]
+        score = (sum(peer_scores) / len(peer_scores)) if peer_scores else 0.0
+        if story_tokens:
+            score += _jaccard(tokens, story_tokens)
+        if score > best_score:
+            anchor_index = idx
+            best_score = score
+
+    anchor_tokens = token_sets[anchor_index]
+    selected = []
+    excluded = []
+    for article, tokens in zip(articles, token_sets):
+        anchor_similarity = _jaccard(tokens, anchor_tokens)
+        story_similarity = _jaccard(tokens, story_tokens)
+        shared_anchor_terms = len(tokens & anchor_tokens)
+        shared_story_terms = len(tokens & story_tokens)
+        include = (
+            article is articles[anchor_index] or
+            anchor_similarity >= 0.08 or
+            story_similarity >= 0.08 or
+            shared_anchor_terms >= 3 or
+            shared_story_terms >= 2
+        )
+        if include:
+            selected.append(article)
+        else:
+            excluded.append(article)
+
+    # Avoid starving the prompt on small or unusually diverse stories.
+    if len(selected) < max(2, len(articles) // 2):
+        return articles, []
+
+    if excluded:
+        logger.info(
+            "  [StoryFilter] Excluding %s likely outlier article(s) from story %s prompt: %s",
+            len(excluded),
+            getattr(story, "id", "unknown"),
+            "; ".join((article.title or "")[:80] for article in excluded),
+        )
+    return selected, excluded
+
+
 def get_topics_list(obj):
     """Get the topic names for a Story or Article as a list of strings."""
     try:
@@ -106,8 +200,30 @@ def summarize_story(story):
     analysis_type = detect_analysis_type(story)
     persona = get_persona(analysis_type)
 
+    prompt_articles, excluded_articles = _select_story_prompt_articles(story, limit=10)
+    readable_articles = [
+        article for article in prompt_articles
+        if len(strip_html(article.content or "").strip()) >= 200
+    ]
+    if not readable_articles:
+        logger.info(
+            "  Skipping story summary for '%s': no readable article content.",
+            story.title[:80],
+        )
+        langfuse_context.update_current_observation(
+            metadata={
+                "model": MODEL,
+                "analysis_type": analysis_type,
+                "persona": persona,
+                "prompt_articles": len(prompt_articles),
+                "excluded_prompt_articles": len(excluded_articles),
+                "skipped_reason": "no_readable_article_content",
+            }
+        )
+        return None
+
     article_texts = []
-    for i, article in enumerate(story.articles[:10], 1):
+    for i, article in enumerate(prompt_articles, 1):
         text = f"{i}. Title: {article.title}"
         if article.content:
             # Strip HTML before sending to Ollama
@@ -139,7 +255,13 @@ Executive Summary:"""
 
     langfuse_context.update_current_observation(
         input=prompt,
-        metadata={"model": MODEL, "analysis_type": analysis_type, "persona": persona}
+        metadata={
+            "model": MODEL,
+            "analysis_type": analysis_type,
+            "persona": persona,
+            "prompt_articles": len(prompt_articles),
+            "excluded_prompt_articles": len(excluded_articles),
+        }
     )
     try:
         response = requests.post(
@@ -191,7 +313,28 @@ def generate_deep_report(story):
     right_articles = []
     unrated_articles = []
 
-    for article in story.articles[:15]:
+    prompt_articles, excluded_articles = _select_story_prompt_articles(story, limit=15)
+    readable_articles = [
+        article for article in prompt_articles
+        if len(strip_html(article.content or "").strip()) >= 200
+    ]
+    if not readable_articles:
+        logger.info(
+            "  Skipping deep report for '%s': no readable article content.",
+            story.title[:80],
+        )
+        langfuse_context.update_current_observation(
+            metadata={
+                "model": MODEL,
+                "analysis_type": analysis_type,
+                "prompt_articles": len(prompt_articles),
+                "excluded_prompt_articles": len(excluded_articles),
+                "skipped_reason": "no_readable_article_content",
+            }
+        )
+        return None
+
+    for article in prompt_articles:
         score = article.outlet.bias_score if article.outlet else None
         if score is None:
             unrated_articles.append(article)
@@ -404,7 +547,12 @@ Rules:
 
     langfuse_context.update_current_observation(
         input=prompt,
-        metadata={"model": MODEL, "analysis_type": analysis_type}
+        metadata={
+            "model": MODEL,
+            "analysis_type": analysis_type,
+            "prompt_articles": len(prompt_articles),
+            "excluded_prompt_articles": len(excluded_articles),
+        }
     )
 
     try:

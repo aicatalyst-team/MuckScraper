@@ -59,6 +59,7 @@ GOOGLEBOT_DOMAINS = [
     "thedailybeast.com",
     "businessinsider.com",
     "sfgate.com",
+    "telegraph.co.uk",
 ]
 
 VARIANT_RETRY_403_DOMAINS = [

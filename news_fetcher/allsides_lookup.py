@@ -48,6 +48,8 @@ ALLSIDES_BIAS = {
     "Axios": 3,
     "The Hill": 3,
     "Hill": 3,
+    "RealClearPolitics": 3,
+    "Real Clear Politics": 3,
     "USA Today": 3,
     "Bloomberg": 3,
     "Forbes": 3,
@@ -60,6 +62,9 @@ ALLSIDES_BIAS = {
     # Center-Right
     "Wall Street Journal": 4,
     "The Wall Street Journal": 4,
+    "National Post": 4,
+    "The Telegraph": 4,
+    "Telegraph": 4,
     "New York Post": 5,
     "NY Post": 5,
     "Daily Mail": 4,
@@ -67,6 +72,8 @@ ALLSIDES_BIAS = {
     "Washington Examiner": 4,
     "Washington Times": 4,
     "National Review": 4,
+    "Fox Business": 4,
+    "Reason": 4,
 
     # Right
     "Fox News": 5,
@@ -75,6 +82,7 @@ ALLSIDES_BIAS = {
     "The Daily Wire": 5,
     "Daily Wire": 5,
     "Newsmax": 5,
+    "Toronto Sun": 5,
     "The Federalist": 5,
     "Daily Caller": 5,
     "The Daily Caller": 5,

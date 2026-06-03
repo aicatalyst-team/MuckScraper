@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from news_fetcher.topic_classifier import classify_article
 from news_fetcher.headline_generator import generate_story_headline, generate_missing_headlines
 import logging
+from sqlalchemy.orm import selectinload
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,8 @@ BLOCKED_TITLE_KEYWORDS = [
     "Minecraft",
     "Pokemon",
 ]
+
+GROUPING_LOOKBACK_DAYS = int(os.getenv("MUCKSCRAPER_GROUPING_LOOKBACK_DAYS", "7"))
 
 BIAS_BUCKETS = ("left", "lean_left", "center", "lean_right", "right", "unrated")
 
@@ -358,6 +361,27 @@ def _story_balance_bucket(story):
     return "leftish"
 
 
+def _story_has_left_and_right_coverage(story):
+    has_leftish = False
+    has_rightish = False
+
+    for article in story.articles:
+        score = article.bias_score
+        if score is None and article.outlet:
+            score = article.outlet.bias_score
+        bucket = _score_to_bucket(score)
+
+        if bucket in ("left", "lean_left"):
+            has_leftish = True
+        elif bucket in ("right", "lean_right"):
+            has_rightish = True
+
+        if has_leftish and has_rightish:
+            return True
+
+    return False
+
+
 def _story_primary_outlet(story):
     outlet_counts = {}
     for article in story.articles:
@@ -604,6 +628,14 @@ def normalize_source_name(name):
     if "bbc" in name_lower:
         return "BBC News"
 
+    # International right-leaning RSS variants
+    if "national post" in name_lower:
+        return "National Post"
+    if "telegraph" in name_lower and "india" not in name_lower:
+        return "The Telegraph"
+    if "toronto sun" in name_lower:
+        return "Toronto Sun"
+
     # Fox News — keep Fox Business separate
     if "fox news" in name_lower:
         return "Fox News"
@@ -733,10 +765,21 @@ def store_articles(articles_data, topic_name, provider=None):
     metrics = empty_store_metrics(topic_name, provider=provider, input_articles=len(articles_data))
     stories_touched = set()
 
-    # Pre-fetch recent stories once for the whole batch
-    cutoff = datetime.utcnow() - timedelta(days=7)
-    recent_stories = Story.query.filter(Story.created_at >= cutoff).all()
-    logger.info(f"  [Grouper] Loaded {len(recent_stories)} recent stories for matching")
+    # Pre-fetch recent stories once for the whole batch. This is the hottest
+    # fetch path: every new article compares against this pool, so keep the
+    # lookback configurable while we diagnose runtime trends.
+    cutoff = datetime.utcnow() - timedelta(days=GROUPING_LOOKBACK_DAYS)
+    recent_stories = (
+        Story.query
+        .options(selectinload(Story.articles))
+        .filter(Story.created_at >= cutoff)
+        .all()
+    )
+    logger.info(
+        "  [Grouper] Loaded %s recent stories from the last %s day(s) for matching",
+        len(recent_stories),
+        GROUPING_LOOKBACK_DAYS,
+    )
 
     for article in articles_data:
         title        = article.get("title")
@@ -1939,30 +1982,23 @@ def publish_edition():
             "story_count": existing.edition_stories.count(),
         }
 
-    # Look back across all editions published in the last 24 hours
-    recent_cutoff = datetime.utcnow() - timedelta(hours=24)
-    recent_editions = Edition.query.filter(
-        Edition.created_at >= recent_cutoff,
-        Edition.published == True
-    ).order_by(Edition.created_at.desc()).all()
-
-    prev_story_ids = set()
-    for ed in recent_editions:
-        for es in ed.edition_stories.all():
-            prev_story_ids.add(es.story_id)
-
-    # Most recent edition's timestamp is used for the new-articles check
+    # Only suppress repeats from the immediately previous edition. Older
+    # stories may return if they remain important in a later news cycle.
     prev_edition = Edition.query.filter(
         Edition.published == True
     ).order_by(Edition.created_at.desc()).first()
     prev_published_at = prev_edition.created_at if prev_edition else None
+    prev_story_ids = set()
+    if prev_edition:
+        prev_story_ids = {es.story_id for es in prev_edition.edition_stories.all()}
 
-    # Get top 50 scored stories as candidates
+    # Get top scored stories as candidates. Pull extra depth so suppressing
+    # unchanged previous-edition stories does not leave the edition short.
     story_cutoff = datetime.utcnow() - timedelta(days=3)
     candidates = Story.query.filter(
         Story.headline_score > 0,
         Story.created_at >= story_cutoff
-    ).order_by(Story.headline_score.desc()).limit(50).all()
+    ).order_by(Story.headline_score.desc()).limit(100).all()
 
     # Exclude single-article stories with no scraped content
     filtered_candidates = []
@@ -1988,8 +2024,6 @@ def publish_edition():
 
     eligible_multi = []
     eligible_single = []
-    carried_multi = []
-    carried_single = []
     seen_story_ids = set()
 
     for story in candidates:
@@ -1997,7 +2031,6 @@ def publish_edition():
             continue
         seen_story_ids.add(story.id)
         target_eligible = eligible_multi if len(story.articles) >= 2 else eligible_single
-        target_carried = carried_multi if len(story.articles) >= 2 else carried_single
 
         if story.id not in prev_story_ids:
             # New story not in previous edition
@@ -2010,31 +2043,8 @@ def publish_edition():
             ]
             if new_articles:
                 target_eligible.append((story, True))
-            else:
-                target_carried.append((story, False))
 
     eligible = eligible_multi + eligible_single
-
-    # Fill to 20 with carried-over stories if needed.
-    # Only carry stories that are less than 48 hours old to prevent
-    # ancient high-scored stories from recycling indefinitely.
-    carry_cutoff = datetime.utcnow() - timedelta(hours=48)
-    fresh_carried_multi = [
-        (story, has_updates)
-        for story, has_updates in carried_multi
-        if story.created_at >= carry_cutoff
-    ]
-    fresh_carried_single = [
-        (story, has_updates)
-        for story, has_updates in carried_single
-        if story.created_at >= carry_cutoff
-    ]
-    if len(eligible) < 20:
-        slots_left = 20 - len(eligible)
-        eligible.extend(fresh_carried_multi[:slots_left])
-        slots_left = 20 - len(eligible)
-        if slots_left > 0:
-            eligible.extend(fresh_carried_single[:slots_left])
 
     # Final dedup safety net — ensures no story_id appears twice
     # regardless of how eligible was built
@@ -2056,9 +2066,11 @@ def publish_edition():
         "rightish": 0,
         "unrated": 0,
     }
+    mixed_coverage_count = 0
     outlet_story_counts = {}
     max_stories_per_balance_bucket = 8
     max_stories_per_primary_outlet = 4
+    target_mixed_coverage_stories = 8
     target_minimums = {
         "leftish": 7,
         "center": 7,
@@ -2086,20 +2098,42 @@ def publish_edition():
         return True
 
     def add_story(story, has_updates):
+        nonlocal mixed_coverage_count
         balance_bucket = _story_balance_bucket(story)
         primary_outlet = _story_primary_outlet(story)
         balance_bucket_counts[balance_bucket] = balance_bucket_counts.get(balance_bucket, 0) + 1
         outlet_story_counts[primary_outlet] = outlet_story_counts.get(primary_outlet, 0) + 1
+        if _story_has_left_and_right_coverage(story):
+            mixed_coverage_count += 1
         top_20.append((story, has_updates))
 
-    # First reserve a minimum number of slots for each major balance bucket
-    # using ranked order, then fill the remaining edition slots normally.
+    # First reserve room for high-ranked stories that already have both
+    # leftish and rightish coverage, then fill major balance buckets.
     selected_ids = set()
+    for story, has_updates in deduped:
+        if len(top_20) >= 20:
+            break
+        if not _story_has_left_and_right_coverage(story):
+            continue
+        if any(stories_look_duplicate_for_edition(story, kept_story) for kept_story, _ in top_20):
+            dedupe_skip_count += 1
+            continue
+        if not can_add_balanced(story):
+            continue
+        add_story(story, has_updates)
+        selected_ids.add(story.id)
+        if mixed_coverage_count >= target_mixed_coverage_stories:
+            break
+
     for bucket in ("rightish", "center", "leftish"):
+        if len(top_20) >= 20:
+            break
         target = min(target_minimums[bucket], available_by_bucket.get(bucket, 0))
         if target <= 0:
             continue
         for story, has_updates in deduped:
+            if len(top_20) >= 20:
+                break
             if story.id in selected_ids:
                 continue
             if _story_balance_bucket(story) != bucket:
@@ -2111,10 +2145,12 @@ def publish_edition():
                 continue
             add_story(story, has_updates)
             selected_ids.add(story.id)
-            if balance_bucket_counts.get(bucket, 0) >= target:
+            if balance_bucket_counts.get(bucket, 0) >= target or len(top_20) >= 20:
                 break
 
     for story, has_updates in deduped:
+        if len(top_20) >= 20:
+            break
         if story.id in selected_ids:
             continue
         if any(stories_look_duplicate_for_edition(story, kept_story) for kept_story, _ in top_20):
@@ -2137,6 +2173,8 @@ def publish_edition():
         selected_ids = {story.id for story, _ in top_20}
         for relax_bias_cap in (False, True):
             for story, has_updates in deduped:
+                if len(top_20) >= 20:
+                    break
                 if story.id in selected_ids:
                     continue
                 if any(stories_look_duplicate_for_edition(story, kept_story) for kept_story, _ in top_20):
@@ -2156,10 +2194,15 @@ def publish_edition():
 
                 add_story(story, has_updates)
                 selected_ids.add(story.id)
-                if len(top_20) >= 20:
-                    break
             if len(top_20) >= 20:
                 break
+
+    if len(top_20) > 20:
+        logger.warning(
+            "[Edition] Selection produced %s stories; trimming to 20.",
+            len(top_20),
+        )
+        top_20 = top_20[:20]
 
     if not top_20:
         logger.warning(f"[Edition] No stories available for {edition_type} edition on {today}.")
@@ -2197,7 +2240,7 @@ def publish_edition():
         f"{updated_repeat_count} repeated stories with new updates, "
         f"{dedupe_skip_count} same-event candidates skipped, "
         f"caps_skipped bias={constrained_skip_counts['bias_cap']} outlet={constrained_skip_counts['outlet_cap']}, "
-        f"balance={balance_bucket_counts})."
+        f"mixed_coverage={mixed_coverage_count}, balance={balance_bucket_counts})."
     )
     return {
         "status": "published",
@@ -2208,6 +2251,7 @@ def publish_edition():
         "carryover_count": carryover_count,
         "updated_repeat_count": updated_repeat_count,
         "dedupe_skip_count": dedupe_skip_count,
+        "mixed_coverage_count": mixed_coverage_count,
         "balance_bucket_counts": balance_bucket_counts,
         "caps_skipped_bias": constrained_skip_counts["bias_cap"],
         "caps_skipped_outlet": constrained_skip_counts["outlet_cap"],

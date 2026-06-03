@@ -54,7 +54,6 @@ MuckScraper fetches articles from multiple news APIs and RSS feeds on a schedule
 - **LLM Runtime:** Ollama-compatible local models
 - **Embeddings:** `nomic-embed-text`
 - **Scraping:** BeautifulSoup, readability-lxml, Playwright
-- **Observability:** Langfuse (optional)
 - **Runtime:** Docker and Docker Compose
 
 ---
@@ -111,7 +110,6 @@ Recommended deployment:
 - GNews API key
 - Ollama or another compatible local model endpoint
 - PostgreSQL with pgvector support
-- Langfuse instance if you want tracing
 
 ---
 
@@ -121,9 +119,10 @@ Recommended deployment:
 git clone https://github.com/grregis/muckscraper.git
 cd muckscraper
 cp .env.sample .env
-# Edit .env with your API keys and local model host
-docker compose up --build
-docker compose exec app python create_admin.py
+# Edit .env with your API keys, local model host, and admin login
+docker compose up -d --build postgres meilisearch app
+docker compose exec app python bootstrap_admin.py
+docker compose up -d scheduler
 ```
 
 Then open `http://localhost:5000`.
@@ -133,6 +132,10 @@ If you pull schema changes later:
 ```bash
 docker exec muckscraper-app-1 flask db upgrade
 ```
+
+### Optional workflow integrations
+
+MuckScraper can be extended with personal workflow hooks, such as n8n webhooks for fetch reports or Ollama power management, and Matrix notifications for status messages. These are not part of the default Docker Compose setup; add them with your own environment variables, compose override, or notification code if you want those workflows.
 
 ---
 

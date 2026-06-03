@@ -26,14 +26,21 @@ RSS_FEEDS = [
     "https://www.theguardian.com/world/rss",
     # Center-Right
     "https://moxie.foxnews.com/google-publisher/latest.xml",
+    "https://moxie.foxbusiness.com/google-publisher/latest.xml",
     "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
     "https://nypost.com/feed/",
+    "https://www.washingtontimes.com/rss/headlines/news/politics/",
+    "https://reason.com/feed/",
+    "https://www.nationalreview.com/feed/",
     # Political / Neutral
     "https://thehill.com/feed/",
     "https://api.axios.com/feed/",
     "https://rss.politico.com/politics-news.xml",
     # International / Additional Networks
     "https://www.aljazeera.com/xml/rss/all.xml",
+    "https://nationalpost.com/feed/",
+    "https://www.telegraph.co.uk/rss.xml",
+    "https://torontosun.com/feed/",
     "https://feeds.abcnews.com/abcnews/topstories",
     "https://www.cbsnews.com/latest/rss/main",
 ]
@@ -42,7 +49,12 @@ RIGHT_ENRICHMENT_FEEDS = [
     "https://moxie.foxnews.com/google-publisher/latest.xml",
     "https://feeds.a.dj.com/rss/RSSWorldNews.xml",
     "https://nypost.com/feed/",
-    "https://thehill.com/feed/",
+    "https://www.washingtonexaminer.com/rss",
+    "https://www.washingtontimes.com/rss/headlines/news/politics/",
+    "https://www.nationalreview.com/feed/",
+    "https://moxie.foxbusiness.com/google-publisher/latest.xml",
+    "https://www.newsmax.com/rss/Newsfront/16/",
+    "https://www.dailywire.com/feeds/rss.xml",
 ]
 RIGHT_ENRICHMENT_TOPIC = "Targeted Right RSS Enrichment"
 LEFT_ENRICHMENT_FEEDS = [
