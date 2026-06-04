@@ -4,35 +4,94 @@ All notable changes to MuckScraper are documented here.
  
 ---
 
-## [0.5.0] - 2026-05-16
+## [0.5.0] - 2026-06-03
+
+Status: beta candidate. MuckScraper is moving from early alpha into beta: the
+core fetch, grouping, admin, and edition workflows are now usable end-to-end on a
+fresh install, while source balance, scrape quality, and headline-selection
+tuning remain active areas of work.
 
 ### Added
 
+- **Fresh-install bootstrap**:
+  - `bootstrap_admin.py` initializes the database, stamps Alembic current for a fresh schema, and creates or updates the admin user from `.env`
+  - `.env.sample` now includes `ADMIN_USERNAME`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD`
+  - README install flow now starts core services, runs bootstrap, then starts the scheduler
+- **Admin and operations tooling**:
+  - new Admin Tools page centralizes maintenance actions
+  - Meilisearch-backed admin search support with rebuild/status endpoints
+  - expanded troubleshooting guide for scheduler, database, scrape, and run-metric checks
 - **Scrape telemetry expansion**:
   - persisted scrape status, method, failure reason, and HTTP status now flow through ingestion, retries, and admin tooling
-  - scrape outcome history is now stored over time for operational review
-- **Edition publish dedupe**:
+  - scrape outcome history is stored over time for operational review
+  - low-value article detection flags roundups, live updates, video pages, and weak/duplicative scrape output
+- **Edition and headline hardening**:
   - same-event headline candidates are filtered before publish
   - edition backfill continues down the ranked list to preserve edition size after duplicate removals
+  - editions are capped at 20 stories even after mixed-coverage reservation and balance fills
+  - previous-edition repeats are suppressed unless the story has new articles
+  - stories with leftish and rightish coverage are favored during edition selection
+- **Source-balance and RSS enrichment**:
+  - added targeted right/center-right and international sources including Reason, National Post, The Telegraph, Toronto Sun, Washington Examiner, Newsmax, and Daily Wire
+  - added bias lookup/normalization support for new outlets
+  - added left and right targeted enrichment passes around headline ranking
+- **Summary quality guardrails**:
+  - story summaries and deep reports now skip generation when no article has enough readable scraped content
+  - prompt filtering reduces misgrouped/outlier articles before story summaries and deep reports
 - **Archived edition images**:
   - edition-story image metadata is stored on `EditionStory`
   - archived local copies can be generated from story article images for stable published output
+  - low-resolution headline images are filtered out instead of shown as blurry thumbnails
 - **Grouping review fields** on articles to support higher-scrutiny grouping workflows
+- **Updated README screenshots** for story reader, bias tags, and article reader
 
 ### Changed
 
-- Scraper retry behavior now keeps degraded domains cooled down even when a URL-level fallback succeeds
-- High-cost scrape variant fan-out is skipped after strong terminal failures like `401`, `403`, `404`, and `410`
-- Scheduler startup catch-up logic now waits for the next scheduled run unless a scheduled slot was actually missed
+- Docker Compose no longer includes personal Langfuse or n8n environment hooks by default
+- README now treats n8n, Matrix notifications, and similar workflow hooks as optional personal integrations
+- Flask app now runs through `boot.sh` and Gunicorn in the container
+- Scheduler startup catch-up logic waits for the next scheduled run unless a scheduled slot was actually missed
+- Static headline export now defaults to the latest edition instead of rebuilding every historical edition on every run
 - `process_current_edition()` skips unchanged stable stories earlier instead of repeatedly reconsidering them for summary work
+- Story grouping now eager-loads recent story articles for the hot matching path and logs the configured lookback window
+- Scraper retry behavior keeps degraded domains cooled down even when a URL-level fallback succeeds
+- High-cost scrape variant fan-out is skipped after strong terminal failures like `401`, `403`, `404`, and `410`
 - Edition dedupe matching was tightened to reduce false positives driven by generic political/process words
+- README and project map were cleaned up so public repo docs no longer depend on deployment-specific/private headline-site files
 
 ### Fixed
 
+- Fresh installs failing when `create_admin.py` ran before the `users` table existed
+- Compose warnings for removed personal Langfuse/n8n variables in default installs
 - Real same-event duplicate clusters making it into the same published edition
+- Editions occasionally exceeding the 20-story target during balance fill
+- Repeated stories carrying forward unchanged from the immediately previous edition
+- Summaries and deep reports hallucinating from title-only article sets with no readable content
 - Excessive retry churn on chronically blocked scrape domains
 - Misleading public docs and repo-map references to deployment-specific paths
 - Confusing Alembic migration filename mismatch for the archived-edition-image revision
+
+### Upgrade Notes
+
+- For a fresh install:
+
+  ```bash
+  cp .env.sample .env
+  # Edit .env with API keys, model host, database settings, and admin login
+  docker compose up -d --build postgres meilisearch app
+  docker compose exec app python bootstrap_admin.py
+  docker compose up -d scheduler
+  ```
+
+- For an existing install, pull the update and run migrations:
+
+  ```bash
+  docker compose up -d --build
+  docker compose exec app flask db upgrade
+  ```
+
+- `create_admin.py` still exists, but `bootstrap_admin.py` is now the recommended first-run setup path.
+- Langfuse and n8n are no longer part of the default Compose environment. Add them with your own override/env wiring if you use those personal workflows.
 
 ---
  

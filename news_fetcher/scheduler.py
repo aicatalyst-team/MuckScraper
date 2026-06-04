@@ -515,6 +515,7 @@ def _build_fetch_report(run_metrics, headline_site_metrics, ollama_state):
     run_totals = run_metrics.get("totals", {})
     headline_scrape = dict(headline_site_metrics.get("scrape", {}).get("articles_by_status", {}))
     edition = headline_site_metrics.get("edition", {}) or {}
+    headline_metrics_label = "Latest published edition stats"
 
     return {
         "status": run_metrics.get("status", "unknown"),
@@ -527,6 +528,7 @@ def _build_fetch_report(run_metrics, headline_site_metrics, ollama_state):
         "new_outlets": run_totals.get("new_outlets", 0),
         "stories_touched": run_totals.get("stories_touched", 0),
         "run_scrape_statuses": dict(run_totals.get("scrape_statuses", {})),
+        "headline_metrics_label": headline_metrics_label,
         "headline_scrape": headline_scrape,
         "headline_readable_articles": headline_site_metrics.get("scrape", {}).get("readable_articles", 0),
         "headline_fully_read_articles": headline_site_metrics.get("scrape", {}).get("fully_read_articles", 0),
@@ -539,6 +541,7 @@ def _build_fetch_report(run_metrics, headline_site_metrics, ollama_state):
         "ollama": ollama_state,
         "run_metrics": run_metrics,
         "headline_metrics": headline_site_metrics,
+        "latest_published_edition_metrics": headline_site_metrics,
     }
 
 

@@ -148,6 +148,43 @@ def get_topics_list(obj):
         return []
 
 
+def _analysis_text(obj):
+    parts = [
+        getattr(obj, "headline", None) or "",
+        getattr(obj, "title", None) or "",
+    ]
+    for article in list(getattr(obj, "articles", []) or [])[:8]:
+        parts.append(article.title or "")
+    return " ".join(parts).lower()
+
+
+def _contains_any(text, keywords):
+    return any(keyword in text for keyword in keywords)
+
+
+POLITICAL_ANALYSIS_KEYWORDS = {
+    "administration", "agency", "bill", "campaign", "congress", "court",
+    "democrat", "diplomat", "election", "executive order", "federal",
+    "governor", "government", "house ", "justice department", "law",
+    "lawsuit", "minister", "parliament", "policy", "president", "prime minister",
+    "republican", "ruling", "sanction", "senate", "tariff", "trump", "white house",
+}
+
+PUBLIC_SAFETY_ANALYSIS_KEYWORDS = {
+    "accident", "arrested", "attack", "blaze", "crash", "dead", "death",
+    "disaster", "earthquake", "evacuation", "explosion", "fire", "flood",
+    "hostage", "injured", "killed", "missing", "police", "rescue", "search",
+    "shooting", "storm", "victim",
+}
+
+BUSINESS_ANALYSIS_KEYWORDS = {
+    "bank", "bankruptcy", "bond", "ceo", "company", "earnings", "economy",
+    "fed", "federal reserve", "finance", "inflation", "investor", "layoff",
+    "market", "merger", "mortgage", "price", "profit", "rate", "revenue",
+    "stock", "trade", "wall street",
+}
+
+
 def detect_analysis_type(obj):
     """
     Determine which type of specialized persona to use based on topics.
@@ -155,14 +192,20 @@ def detect_analysis_type(obj):
     """
     topics = get_topics_list(obj)
     topics_lower = [t.lower() for t in topics]
-    
-    if any('us politics' in t for t in topics_lower):
+    text = _analysis_text(obj)
+
+    if _contains_any(text, PUBLIC_SAFETY_ANALYSIS_KEYWORDS):
+        return 'default'
+    if any('us politics' in t for t in topics_lower) and _contains_any(text, POLITICAL_ANALYSIS_KEYWORDS):
         return 'politics'
     if any('science' in t or 'technology' in t for t in topics_lower):
         return 'science'
     if any('sports' in t for t in topics_lower):
         return 'sports'
-    if any('business' in t or 'finance' in t for t in topics_lower):
+    if (
+        any('business' in t or 'finance' in t for t in topics_lower)
+        and _contains_any(text, BUSINESS_ANALYSIS_KEYWORDS)
+    ):
         return 'business'
     return 'default'
 
@@ -335,22 +378,25 @@ def generate_deep_report(story):
         return None
 
     for article in prompt_articles:
-        score = article.outlet.bias_score if article.outlet else None
+        score = article.bias_score
+        if score is None and article.outlet:
+            score = article.outlet.bias_score
         if score is None:
             unrated_articles.append(article)
-        elif score <= 2:
+        elif score <= 2.5:
             left_articles.append(article)
-        elif score == 3:
+        elif score <= 3.5:
             center_articles.append(article)
         else:
             right_articles.append(article)
 
-    def format_articles(articles, label):
+    def format_articles(articles, label, include_empty=False):
         if not articles:
-            return ""
+            return f"\n{label} Sources:\n- None found in the current source set." if include_empty else ""
         lines = [f"\n{label} Sources:"]
         for a in articles:
-            lines.append(f"- {a.outlet.name}: {a.title}")
+            outlet_name = a.outlet.name if a.outlet else (a.source or "Unknown source")
+            lines.append(f"- {outlet_name}: {a.title}")
             if a.content:
                 snippet = strip_html(a.content)[:300].strip()
                 if snippet:
@@ -361,7 +407,8 @@ def generate_deep_report(story):
         """Format all articles without bias grouping for non-political analysis."""
         lines = []
         for a in articles:
-            lines.append(f"- {a.outlet.name}: {a.title}")
+            outlet_name = a.outlet.name if a.outlet else (a.source or "Unknown source")
+            lines.append(f"- {outlet_name}: {a.title}")
             if a.content:
                 snippet = strip_html(a.content)[:300].strip()
                 if snippet:
@@ -370,18 +417,28 @@ def generate_deep_report(story):
 
     # Build prompt based on analysis type
     if analysis_type == 'politics':
-        left_section = format_articles(left_articles, "LEFT-LEANING")
-        center_section = format_articles(center_articles, "CENTER")
-        right_section = format_articles(right_articles, "RIGHT-LEANING")
-        unrated_section = format_articles(unrated_articles, "UNRATED")
+        left_section = format_articles(left_articles, "LEFT-LEANING", include_empty=True)
+        center_section = format_articles(center_articles, "CENTER", include_empty=True)
+        right_section = format_articles(right_articles, "RIGHT-LEANING", include_empty=True)
+        unrated_section = format_articles(unrated_articles, "UNRATED", include_empty=True)
         combined = left_section + center_section + right_section + unrated_section
 
         if not combined.strip():
             return None
 
+        source_availability = "\n".join([
+            f"- Left-leaning sources found: {len(left_articles)}",
+            f"- Center sources found: {len(center_articles)}",
+            f"- Right-leaning sources found: {len(right_articles)}",
+            f"- Unrated sources found: {len(unrated_articles)}",
+        ])
+
         prompt = f"""You are an experienced media analyst writing a detailed report on how different news outlets are covering the same political story.
 
-Below are articles from outlets with different political leanings. Analyze how each side is framing the story.
+Below are articles from the current source set, grouped by available outlet bias.
+
+Source availability:
+{source_availability}
 
 {combined}
 
@@ -389,11 +446,11 @@ Write a detailed analytical report using this EXACT format:
 
 The story: [2-3 sentences explaining what happened factually]
 
-How the left is covering it: [How left-leaning outlets are framing this story, what they emphasize, what language they use. If no left sources, say "No left-leaning sources covered this story."]
+How the left is covering it: [Only describe left-leaning coverage if left-leaning sources are listed above. If no left-leaning sources are listed, write exactly: "No left-leaning sources were found in the current coverage."]
 
-How the center is covering it: [How center outlets are framing this story. If no center sources, say "No center sources covered this story."]
+How the center is covering it: [Only describe center coverage if center sources are listed above. If no center sources are listed, write exactly: "No center sources were found in the current coverage."]
 
-How the right is covering it: [How right-leaning outlets are framing this story, what they emphasize, what language they use. If no right sources, say "No right-leaning sources covered this story."]
+How the right is covering it: [Only describe right-leaning coverage if right-leaning sources are listed above. If no right-leaning sources are listed, write exactly: "No right-leaning sources were found in the current coverage."]
 
 What's contested: [Where the different sides disagree most sharply, what facts or framings are in dispute]
 
@@ -404,6 +461,8 @@ What's next: [One sentence on what to watch for]
 Rules:
 - Use EXACTLY the labels shown above including the colon
 - Be specific about framing differences, not just topic differences
+- Do not infer, invent, or speculate about how a missing source bucket would cover the story
+- If a source bucket has no listed articles, use the exact "No ... sources were found" sentence for that section
 - Stay neutral and analytical in your own voice
 - No markdown, no extra formatting
 - Do not add any text before or after the structure above"""
@@ -542,6 +601,8 @@ What's next: [One sentence on what to watch for]
 Rules:
 - Use EXACTLY the labels shown above including the colon
 - Stay neutral and analytical
+- Compare only the outlets and perspectives actually present in the article list
+- Do not use left/right political framing unless the story is explicitly about politics, government, law, elections, or policy
 - No markdown, no extra formatting
 - Do not add any text before or after the structure above"""
 
