@@ -194,6 +194,13 @@ def detect_analysis_type(obj):
     topics_lower = [t.lower() for t in topics]
     text = _analysis_text(obj)
 
+    # A story whose only topic is US Politics is high-confidence enough on its
+    # own: don't let rhetorical verbs ("attacks", "slams") in its headlines
+    # fall through to PUBLIC_SAFETY_ANALYSIS_KEYWORDS, and don't require a
+    # POLITICAL_ANALYSIS_KEYWORDS match that policy-speech headlines often lack.
+    if topics_lower == ['us politics']:
+        return 'politics'
+
     if _contains_any(text, PUBLIC_SAFETY_ANALYSIS_KEYWORDS):
         return 'default'
     if any('us politics' in t for t in topics_lower) and _contains_any(text, POLITICAL_ANALYSIS_KEYWORDS):
