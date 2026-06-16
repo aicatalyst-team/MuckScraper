@@ -223,3 +223,10 @@ Important knobs include:
 
 - This repo intentionally documents the main application and ingestion pipeline, not every deployment-specific integration.
 - Optional local integrations can exist around the core stack without being required for the open-source app itself.
+
+---
+
+## Special Thanks
+
+- **[Meilisearch](https://www.meilisearch.com/)** — powers full-text search across articles and stories. Fast, easy to self-host, and a genuinely great fit for this kind of project.
+- **[Langfuse](https://langfuse.com/)** — LLM observability and tracing, invaluable for debugging prompts and iterating on model behavior during development.
