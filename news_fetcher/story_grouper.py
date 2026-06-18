@@ -246,7 +246,7 @@ def _candidate_story_ids(stories, max_candidates=3):
     return ids
 
 
-def find_matching_story_with_metadata(article_title, article_embedding, recent_stories, article_content=None):
+def find_matching_story_with_metadata(article_title, article_embedding, recent_stories, article_content=None, db=None):
     article_title = strip_video_prefix(article_title)
     if article_embedding is None:
         return MatchDecision()
@@ -258,6 +258,8 @@ def find_matching_story_with_metadata(article_title, article_embedding, recent_s
 
     from sqlalchemy.orm.exc import ObjectDeletedError
 
+    # Title scan (Python): pure string ops, fast regardless of pool size.
+    # Finds near-duplicate titles and keyword overlap candidates.
     for story in recent_stories:
         try:
             candidate_titles = [story.title]
@@ -270,24 +272,11 @@ def find_matching_story_with_metadata(article_title, article_embedding, recent_s
                 max_shared = max(max_shared, len(shared))
                 if titles_are_near_duplicates(article_title, candidate_title):
                     best_title_match = story
+                    break
+            if best_title_match:
+                break
             if max_shared >= 3:
                 overlap_candidates.append((max_shared, story))
-
-            articles = story.articles
-            if not articles:
-                continue
-            best_story_score = 0.0
-            for article in articles:
-                try:
-                    if article.embedding is not None:
-                        score = cosine_similarity(article_embedding, article.embedding)
-                        if score > best_story_score:
-                            best_story_score = score
-                except ObjectDeletedError:
-                    continue
-            if best_story_score > best_global_score:
-                best_global_score = best_story_score
-                best_story = story
         except ObjectDeletedError:
             continue
 
@@ -335,6 +324,60 @@ def find_matching_story_with_metadata(article_title, article_embedding, recent_s
                 candidate_story_ids=_candidate_story_ids(unique_candidates),
                 needs_review=True,
             )
+
+    # Embedding search: pgvector query when db is available (large pools),
+    # Python cosine scan as fallback for small candidate sets or if pgvector fails.
+    embedding_match_done = False
+
+    if db is not None and recent_stories:
+        story_map = {s.id: s for s in recent_stories if s.id is not None}
+        valid_ids = list(story_map)
+        if valid_ids:
+            emb_str = '[' + ','.join(f'{float(x):.8f}' for x in article_embedding) + ']'
+            ids_pg = '{' + ','.join(str(i) for i in valid_ids) + '}'
+            try:
+                rows = db.session.execute(
+                    db.text("""
+                        SELECT a.story_id,
+                               1 - MIN(a.embedding <=> (:emb)::vector) AS best_sim
+                        FROM articles a
+                        WHERE a.story_id = ANY((:ids)::int[])
+                          AND a.embedding IS NOT NULL
+                        GROUP BY a.story_id
+                        ORDER BY best_sim DESC
+                        LIMIT 5
+                    """),
+                    {"emb": emb_str, "ids": ids_pg},
+                ).fetchall()
+                for story_id, sim in rows:
+                    sim = float(sim)
+                    if sim > best_global_score:
+                        best_global_score = sim
+                        best_story = story_map.get(story_id)
+                embedding_match_done = True
+            except Exception as e:
+                logger.warning(f"  [Grouper] pgvector search failed, falling back to Python: {e}")
+
+    if not embedding_match_done:
+        for story in recent_stories:
+            try:
+                articles = story.articles
+                if not articles:
+                    continue
+                best_story_score = 0.0
+                for article in articles:
+                    try:
+                        if article.embedding is not None:
+                            score = cosine_similarity(article_embedding, article.embedding)
+                            if score > best_story_score:
+                                best_story_score = score
+                    except ObjectDeletedError:
+                        continue
+                if best_story_score > best_global_score:
+                    best_global_score = best_story_score
+                    best_story = story
+            except ObjectDeletedError:
+                continue
 
     if best_global_score >= SIMILARITY_THRESHOLD and best_story:
         logger.info(f"  [Grouper] Matched to '{best_story.title}' (similarity: {best_global_score:.3f})")
@@ -386,12 +429,13 @@ def find_matching_story_with_metadata(article_title, article_embedding, recent_s
     )
 
 
-def find_matching_story(article_title, article_embedding, recent_stories, article_content=None):
+def find_matching_story(article_title, article_embedding, recent_stories, article_content=None, db=None):
     return find_matching_story_with_metadata(
         article_title,
         article_embedding,
         recent_stories,
         article_content=article_content,
+        db=db,
     ).story
 
 
@@ -402,6 +446,7 @@ def find_or_create_story(article_title, db, Story, recent_stories, article_embed
         article_embedding,
         recent_stories,
         article_content=article_content,
+        db=db,
     )
     matched_story = match.story
 
