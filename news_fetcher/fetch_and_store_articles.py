@@ -1971,7 +1971,8 @@ def publish_edition():
         Story.created_at >= story_cutoff
     ).order_by(Story.headline_score.desc()).limit(100).all()
 
-    # Exclude single-article stories with no scraped content
+    # Exclude stories with no scraped content on any article, and
+    # single-article stories with generic roundup titles.
     filtered_candidates = []
     for story in candidates:
         first_article = _first_story_article(story)
@@ -1982,8 +1983,18 @@ def publish_edition():
             )
             continue
 
+        from news_fetcher.summarizer import strip_html
+        has_readable_content = any(
+            len(strip_html(a.content or "").strip()) >= 200 for a in story.articles
+        )
+        if not has_readable_content:
+            logger.warning(
+                "[Edition] Skipping story %s — no article has readable content (%s article(s)).",
+                story.id, len(story.articles),
+            )
+            continue
+
         if len(story.articles) == 1 and (
-            not (first_article.content or "").strip() or
             is_generic_roundup_title(story.title) or
             is_generic_roundup_title(first_article.title)
         ):
