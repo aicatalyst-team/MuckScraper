@@ -18,7 +18,7 @@ RUN grep -v -i playwright requirements.txt > requirements-nopw.txt && \
 # Copy application code
 COPY aggregator/ ./aggregator/
 COPY news_fetcher/ ./news_fetcher/
-COPY migrations/ ./migrations/ 2>/dev/null || true
+COPY migrations/ ./migrations/
 COPY boot.sh ./boot.sh
 
 # Create a custom boot script for OpenShift (port 8080)
