@@ -1,0 +1,35 @@
+FROM registry.access.redhat.com/ubi9/python-312
+
+WORKDIR /opt/app-root/src
+
+# Switch to root for system package installation
+USER 0
+
+# Install PostgreSQL client libraries needed by psycopg2
+RUN dnf install -y postgresql-devel gcc python3.12-devel && dnf clean all
+
+# Copy and install Python dependencies
+COPY requirements.txt .
+# Install deps, skipping playwright (not needed for web serving)
+RUN grep -v -i playwright requirements.txt > requirements-nopw.txt && \
+    pip install --no-cache-dir -r requirements-nopw.txt && \
+    rm requirements-nopw.txt
+
+# Copy application code
+COPY aggregator/ ./aggregator/
+COPY news_fetcher/ ./news_fetcher/
+COPY migrations/ ./migrations/ 2>/dev/null || true
+COPY boot.sh ./boot.sh
+
+# Create a custom boot script for OpenShift (port 8080)
+RUN printf '#!/bin/sh\nset -e\n\n# Run database migrations if DATABASE_URL is set\nif [ -n "$DATABASE_URL" ]; then\n  echo "Running database migrations..."\n  flask db upgrade 2>/dev/null || echo "No migrations to run or migration error (continuing)"\nfi\n\nexec gunicorn -w 2 -b 0.0.0.0:8080 --timeout 120 aggregator.app:app\n' > /opt/app-root/src/boot-ubi.sh && \
+    chmod +x /opt/app-root/src/boot-ubi.sh
+
+# OpenShift compatibility
+RUN chgrp -R 0 /opt/app-root && chmod -R g=u /opt/app-root
+
+USER 1001
+
+EXPOSE 8080
+
+ENTRYPOINT ["/opt/app-root/src/boot-ubi.sh"]
